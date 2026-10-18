@@ -1,0 +1,88 @@
+# Summary of Vehicle DoIP Interaction Information Collected Today
+
+## 1. ChatGPT Share Link: VNCI 6154A Connection Log
+URL: https://chatgpt.com/share/6ad456dc-0ca8-83ed-9a7f-35a9851f592b
+Key points:
+- User connected VNCI adapter to Windows 10 hotspot.
+- Ping to 192.168.61.54 successful (≈1 ms, no loss).
+- Test-NetConnection TCP port 13400 returned `False` (no TCP connection).
+- Next step: check UDP port 13400 for DoIP Vehicle Identification Request.
+- Suggested using a simple PowerShell command or a double‑clickable file to test UDP detection.
+- Asked if Python is installed for easier testing.
+
+## 2. User’s Analysis of VNCI 6154A DoIP Interaction with VW ID.7
+- Network topology: When VNCI is in DoIP mode, an isolated VLAN is created.
+  - PC IP: 192.168.13.240
+  - VNCI device IP: 192.168.13.69
+- Using VCTool, the real gateway IP of the VW ID.7 was discovered: 192.168.13.241.
+- The vehicle responds on standard DoIP diagnostic ports (TCP/UDP 13400) per ISO 13400.
+- VW MEB platform protection:
+  - DoIP stack in the gateway is in sleep mode; normal ARP/ network scans do not show the vehicle address.
+  - Gateway awakens after receiving a trigger: either a 12 V signal on OBD line (pin 8) **or** a broadcast UDP Vehicle Identification Request.
+  - Manual Routing Activation Requests via text utilities (Packet Sender) fail with “Could not connect” or session reset because:
+    * VAG MEB blocks are strict about connection timeouts.
+    * Require a valid binary packet format (no extra ASCII characters like CR/LF).
+    * Parallel running diagnostic software can cause port blocking.
+- Recommended path for reading vehicle data without ODIS:
+  - Automate with Python using libraries `udsoncan` and `doipclient`.
+  - Keep TCP session open, set tester logical address (e.g., 0x1000 to emulate ODIS), send clean UDS requests (ISO 14229) to read VIN (0xF190), battery parameters, cell voltages, DTCs, etc.
+
+## 3. Clarification on Ethernet Activation (Pin 8 OBD) vs. CAN Wake‑up
+- “Signal 12 V on OBD line” is an oversimplification.
+- Two distinct mechanisms:
+  1. **Ethernet activation** (ISO 13400): Usually pin 8 of OBD connector provides a wake‑up signal to the DoIP entity.
+  2. **CAN‑bus wake‑up**: Classical wake‑up frame or voltage change on CAN transceiver, tied to ignition/terminal 15.
+- In practice, both are often linked to ignition activation, but they are separate triggers. For VW MEB, one or both may be required before the DoIP gateway will respond to UDP Vehicle Identification Requests.
+
+## 4. CSDN Article: “C++ DoIP配置未通过OEM验收的7个隐性缺陷（附TÜV认证级配置Checklist）”
+URL: https://blog.csdn.net/LogicWander/article/details/160765860
+### Seven Hidden Defects
+1. **VIN/EID Format Mismatch with OEM Requirements**
+   - ISO 13400‑2: VIN = 17‑char ASCII, EID = 6 bytes.
+   - Some OEM require specific VIN prefixes (e.g., “WBA”) or XOR‑checksum in EID’s last byte.
+   - Causes false 0x0005 (Unknown Logical Address) errors and OEM rejection.
+2. **Routing Activation Race Condition in Multi‑ECU Topology**
+   - Parallel Routing Activation Requests (0x0003) to multiple ECUs; if any response exceeds the 0x0004 timeout (default 5 s), the stack may close the connection prematurely.
+   - Fix: Dynamically adjust timeout based on hop‑count, e.g., `timeout = 5000 + (hop‑2)*1500` ms.
+3. **DoIP/UDS State‑Machine Synchronization Issue**
+   - On receiving Diagnostic Power Mode Request (0x0005), the gateway may send ACK before the UDS state machine completes its transition.
+   - Subsequent Diagnostic Session Control (0x10) rejected with 0x22 (conditionsNotMet).
+   - Solution: Block ACK until UDS transition confirmed, or add retry mechanism checking UDS state flag.
+4. **Static Port Binding vs. Vehicle Firewall**
+   - DoIP defaults to TCP/UDP 13400, but many ECUs lack dynamic port negotiation.
+   - Vehicle firewall may open only one protocol (often only UDP) or filter by UDS service ports, ignoring DoIP signalling.
+   - Need to verify `bind()` return value, enable `SO_REUSEADDR` only after firewall rules confirmed, log dropped packets.
+5. **Misinterpretation of Alive Check in Low‑Power Wake‑Up Scenarios**
+   - ECU exiting Sleep needs power/clock stabilisation (15‑80 ms); Alive Response may be delayed beyond default 500 ms window.
+   - Gateway seeing two consecutive missed Alive Requests may reset the link.
+   - Implement adaptive “wake‑up grace period”: increase Alive Response timeout to up to 1200 ms during wake‑up, driven by MCU low‑power interrupt flag.
+6. **DoIP Header Parsing Latency Requirement**
+   - OEM often requires header processing latency ≤ 15 ms (99th percentile).
+   - Use zero‑copy parsing, avoid dynamic allocation in hot path.
+7. **VIN Consistency Check**
+   - VIN read via UDS service 0x22 F190 must exactly match VIN stored in ECU NVM and transmitted in DoIP VehicleAnnouncement.
+   - Any mismatch leads to immediate rejection.
+
+### TÜV‑Level Configuration Checklist
+- Verify DoIP header fields: ProtocolVersion = 0x02, InverseVersion = 0xFD, correct PayloadType and PayloadLength.
+- Confirm VIN/EID format compliance (ISO or documented OEM specifics).
+- Ensure header parsing latency ≤ 15 ms.
+- Configure Routing Activation timeout according to network depth (hop‑count).
+- Synchronise DoIP and UDS state machines (no premature ACK on 0x0005).
+- Validate TCP/UDP 13400 port binding; ensure vehicle firewall permits both directions.
+- Implement Alive Check with dynamic timeout accommodating wake‑up latency.
+- Perform end‑to‑end VIN consistency test (UDS 0x22 F190 vs. DoIP VehicleAnnouncement).
+
+## 5. Other Sources Consulted
+- **Taobao Link** (https://bk.taobao.com/k/chezaizhenduanxitong_10749/a36bc94baf51534a8fa6a2c4ab3840cf.html): Generic Taobao homepage description, no relevant technical content.
+- **Google AI Mode Share Link** (https://share.google/aimode/3r5PEYS132usUt0Jl): Returned a “unusual traffic” CAPTCHA/page; content not accessible automatically.
+- **CSDN Column** (https://wenku.csdn.net/column/gez7umpmkga): Returned 403 Forbidden (WAF); unable to retrieve content.
+- **Intelliparadigm.com Search**: No article matching the exact CSDN title found; only the CSDN article itself appeared in web‑search results.
+
+## Conclusion
+All gathered information pertains to:
+- Practical steps to verify and establish DoIP communication with a VNCI 6154A adapter on a VW ID.7 (or similar MEB‑based vehicle).
+- Common pitfalls in DoIP configuration that lead to OEM validation failures, with detailed defect descriptions and mitigation strategies.
+- Recommended software‑based approach (Python + udsoncan/doipclient) for independent diagnostics without ODIS.
+
+This document preserves every piece of information obtained today without omission.
